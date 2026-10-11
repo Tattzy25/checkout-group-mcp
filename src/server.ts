@@ -85,14 +85,6 @@ const createCheckoutInputSchema = z.object({
           "Optional attribution metadata. Supported fields include referring_domain, click_id_tag, click_id_value, activity_id_tag, activity_id_value, utm_campaign, utm_source, utm_medium, utm_content, and utm_term."
         )
         .optional(),
-      discounts: z
-        .object({
-          codes: z.array(z.string()).describe("Discount codes to apply to the checkout.")
-        })
-        .describe(
-          "Optional discount codes. Forward cart discount codes in checkout.discounts.codes during cart-to-checkout conversion."
-        )
-        .optional(),
       fulfillment: z
         .object({})
         .passthrough()
@@ -112,7 +104,6 @@ const createCheckoutInputSchema = z.object({
   if (value.cart_id) {
     return;
   }
-
   if (!value.checkout) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -121,7 +112,6 @@ const createCheckoutInputSchema = z.object({
     });
     return;
   }
-
   if (!value.checkout.currency) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -129,7 +119,6 @@ const createCheckoutInputSchema = z.object({
       path: ["checkout", "currency"]
     });
   }
-
   if (!value.checkout.line_items) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -137,7 +126,6 @@ const createCheckoutInputSchema = z.object({
       path: ["checkout", "line_items"]
     });
   }
-
   if (!value.checkout.buyer) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -146,24 +134,6 @@ const createCheckoutInputSchema = z.object({
     });
   }
 });
-
-const getCheckoutInputSchema = z.object({
-  shop_domain: z
-    .string()
-    .describe("The shop domain to call. This maps to https://{shop-domain}/api/ucp/mcp."),
-  meta: z
-    .object({
-      "ucp-agent": z.object({
-        profile: z
-          .string()
-          .url()
-          .describe("The URI to your agent's UCP profile for capability negotiation.")
-      })
-    })
-    .describe("Request metadata. You must include ucp-agent.profile."),
-  id: z.string().describe("The ID of the checkout session to retrieve.")
-});
-
 const updateCheckoutInputSchema = z.object({
   shop_domain: z
     .string()
@@ -238,12 +208,6 @@ const updateCheckoutInputSchema = z.object({
           "Attribution metadata. Because the checkout object is replaced, resend attribution if you want to preserve it."
         )
         .optional(),
-      discounts: z
-        .object({
-          codes: z.array(z.string()).describe("Updated discount codes for the checkout.")
-        })
-        .describe("Updated discount codes for the checkout.")
-        .optional(),
       fulfillment: z
         .object({})
         .passthrough()
@@ -262,58 +226,6 @@ const updateCheckoutInputSchema = z.object({
     .describe(
       "The checkout object containing the complete updated checkout state. update_checkout uses PUT semantics. Omit a field and it is removed from the checkout. There is no server-side merge of partial updates."
     )
-});
-
-const completeCheckoutInputSchema = z.object({
-  shop_domain: z
-    .string()
-    .describe("The shop domain to call. This maps to https://{shop-domain}/api/ucp/mcp."),
-  meta: z
-    .object({
-      "ucp-agent": z.object({
-        profile: z
-          .string()
-          .url()
-          .describe("The URI to your agent's UCP profile for capability negotiation.")
-      }),
-      "idempotency-key": z
-        .string()
-        .uuid()
-        .describe("A UUID required for retry safety.")
-    })
-    .describe("Request metadata. You must include ucp-agent.profile and idempotency-key."),
-  id: z.string().describe("The ID of the checkout session to complete."),
-  checkout: z
-    .object({
-      payment: z
-        .object({})
-        .passthrough()
-        .describe(
-          "Checkout object containing payment credentials and finalization data. Include checkout.payment with the payment instrument and credential from the trusted UI."
-        )
-    })
-    .describe("Checkout object containing payment credentials and finalization data.")
-});
-
-const cancelCheckoutInputSchema = z.object({
-  shop_domain: z
-    .string()
-    .describe("The shop domain to call. This maps to https://{shop-domain}/api/ucp/mcp."),
-  meta: z
-    .object({
-      "ucp-agent": z.object({
-        profile: z
-          .string()
-          .url()
-          .describe("The URI to your agent's UCP profile for capability negotiation.")
-      }),
-      "idempotency-key": z
-        .string()
-        .uuid()
-        .describe("A UUID required for retry safety.")
-    })
-    .describe("Request metadata. You must include ucp-agent.profile and idempotency-key."),
-  id: z.string().describe("The ID of the checkout session to cancel.")
 });
 
 function createServer() {
@@ -349,32 +261,6 @@ function createServer() {
       return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result };
     }
   );
-
-  server.registerTool(
-    "get_checkout",
-    {
-      description: "Retrieve the current state of an existing checkout session. Use this tool to check the status of a checkout, see updated totals after changes, or verify what information is still needed before completion. When to use: Need to refresh checkout state after buyer returns, Want to show current totals and line items, or Checking if checkout is ready for payment.",
-      inputSchema: getCheckoutInputSchema
-    },
-    async ({ shop_domain, meta, id }: z.infer<typeof getCheckoutInputSchema>) => {
-      const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          id: 1,
-          params: { name: "get_checkout", arguments: { meta, id } }
-        })
-      });
-      const result = await response.json() as Record<string, unknown>;
-      if ("error" in result) {
-        return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result, isError: true };
-      }
-      return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result };
-    }
-  );
-
   server.registerTool(
     "update_checkout",
     {
@@ -400,61 +286,13 @@ function createServer() {
     }
   );
 
-  server.registerTool(
-    "complete_checkout",
-    {
-      description: "Submit payment and place the order. Requires `meta[\"idempotency-key\"]` (UUID) in addition to `meta[\"ucp-agent\"]`. Use this tool when the checkout is ready and the buyer has authorized payment. This finalizes the transaction and creates an order. When to use: Checkout status is `ready_for_complete`, Buyer has reviewed and confirmed the order, or Payment credential has been collected.",
-      inputSchema: completeCheckoutInputSchema
-    },
-    async ({ shop_domain, meta, id, checkout }: z.infer<typeof completeCheckoutInputSchema>) => {
-      const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          id: 1,
-          params: { name: "complete_checkout", arguments: { meta, id, checkout } }
-        })
-      });
-      const result = await response.json() as Record<string, unknown>;
-      if ("error" in result) {
-        return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result, isError: true };
-      }
-      return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result };
-    }
-  );
-
-  server.registerTool(
-    "cancel_checkout",
-    {
-      description: "Cancel an active checkout session. Requires `meta[\"idempotency-key\"]` (UUID) in addition to `meta[\"ucp-agent\"]`. Use this tool when a buyer abandons the checkout or explicitly requests cancellation. Canceled checkouts can't be resumed. Cancellation expires the checkout immediately. The canceled checkout resource includes `expires_at`, which is set to the cancellation timestamp. When to use: Buyer explicitly cancels the order, Session has been abandoned, or Need to start fresh with a new checkout.",
-      inputSchema: cancelCheckoutInputSchema
-    },
-    async ({ shop_domain, meta, id }: z.infer<typeof cancelCheckoutInputSchema>) => {
-      const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          id: 1,
-          params: { name: "cancel_checkout", arguments: { meta, id } }
-        })
-      });
-      const result = await response.json() as Record<string, unknown>;
-      if ("error" in result) {
-        return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result, isError: true };
-      }
-      return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result };
-    }
-  );
-
   return server;
 }
 
 export default {
   fetch(request, env, ctx) {
-    return createMcpHandler(() => createServer(env, request), { allowedOriginHostnames: "*" })(request, env, ctx);
-  }
+    return createMcpHandler(createServer, {
+      allowedOriginHostnames: "*",
+    })(request, env, ctx);
+  },
 } satisfies ExportedHandler;
