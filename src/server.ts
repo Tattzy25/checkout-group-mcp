@@ -2,20 +2,13 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
+const UCP_AGENT_PROFILE =
+  "https://ucp-agent-profile.facetimefy.com/ucp/agent-profiles/2026-08-25/valid-with-capabilities.json";
+
 const createCheckoutInputSchema = z.object({
   shop_domain: z
     .string()
     .describe("The shop domain to call. This maps to https://{shop-domain}/api/ucp/mcp."),
-  meta: z
-    .object({
-      "ucp-agent": z.object({
-        profile: z
-          .string()
-          .url()
-          .describe("The URI to your agent's UCP profile for capability negotiation.")
-      })
-    })
-    .describe("Request metadata. You must include ucp-agent.profile."),
   cart_id: z
     .string()
     .describe(
@@ -134,20 +127,11 @@ const createCheckoutInputSchema = z.object({
     });
   }
 });
+
 const updateCheckoutInputSchema = z.object({
   shop_domain: z
     .string()
     .describe("The shop domain to call. This maps to https://{shop-domain}/api/ucp/mcp."),
-  meta: z
-    .object({
-      "ucp-agent": z.object({
-        profile: z
-          .string()
-          .url()
-          .describe("The URI to your agent's UCP profile for capability negotiation.")
-      })
-    })
-    .describe("Request metadata. You must include ucp-agent.profile."),
   id: z.string().describe("The ID of the checkout session to update."),
   checkout: z
     .object({
@@ -240,7 +224,7 @@ function createServer() {
       description: "Create a new checkout session with line items, buyer information, and fulfillment preferences. Use this tool when a buyer is ready to purchase items and you need to initiate the checkout process. The response includes a `continue_url` for handing off to a trusted UI. When to use: Buyer says \"I want to buy this item\", or Agent has collected enough information to start checkout, and Buyer confirms their cart and wants to proceed.",
       inputSchema: createCheckoutInputSchema
     },
-    async ({ shop_domain, meta, cart_id, checkout }: z.infer<typeof createCheckoutInputSchema>) => {
+    async ({ shop_domain, cart_id, checkout }: z.infer<typeof createCheckoutInputSchema>) => {
       const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -250,24 +234,48 @@ function createServer() {
           id: 1,
           params: {
             name: "create_checkout",
-            arguments: { meta, ...(cart_id ? { cart_id } : {}), ...(checkout ? { checkout } : {}) }
+            arguments: {
+              meta: {
+                "ucp-agent": {
+                  profile: UCP_AGENT_PROFILE
+                }
+              },
+              ...(cart_id ? { cart_id } : {}),
+              ...(checkout ? { checkout } : {})
+            }
           }
         })
       });
-      const result = await response.json() as Record<string, unknown>;
+      const result = await response.json() as {
+        error?: unknown;
+        result?: {
+          content?: Array<{ type: "text"; text: string }>;
+          structuredContent?: Record<string, unknown>;
+          isError?: boolean;
+        };
+      };
       if ("error" in result) {
-        return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result, isError: true };
+        return {
+          content: [{ text: JSON.stringify(result.error), type: "text" as const }],
+          structuredContent: { error: result.error },
+          isError: true
+        };
       }
-      return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result };
+      return {
+        content: result.result?.content ?? [{ text: JSON.stringify(result.result?.structuredContent ?? {}), type: "text" as const }],
+        structuredContent: result.result?.structuredContent ?? {},
+        ...(result.result?.isError !== undefined ? { isError: result.result.isError } : {})
+      };
     }
   );
+
   server.registerTool(
     "update_checkout",
     {
       description: "Update an existing checkout session with new information. Use this tool to modify line items, update shipping address, change fulfillment method, or add buyer information before completing the checkout. When to use: Buyer wants to change quantity or remove items, Buyer provides or updates shipping address, Need to update buyer email or contact info, or Changing a delivery option. Caution: `update_checkout` uses PUT semantics. Each request replaces the full checkout state with the payload you send. Omit a field (for example `line_items` or `buyer`) and it is removed from the checkout. There is no server-side merge of partial updates. Before sending an update, remove response-only fields from the payload. `checkout.buyer.country_code` isn't accepted as input. `checkout.payment.instruments[].display` is response-only. For fulfillment updates, `checkout.fulfillment.methods[].id` is optional, but `line_item_ids` is required.",
       inputSchema: updateCheckoutInputSchema
     },
-    async ({ shop_domain, meta, id, checkout }: z.infer<typeof updateCheckoutInputSchema>) => {
+    async ({ shop_domain, id, checkout }: z.infer<typeof updateCheckoutInputSchema>) => {
       const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -275,14 +283,40 @@ function createServer() {
           jsonrpc: "2.0",
           method: "tools/call",
           id: 1,
-          params: { name: "update_checkout", arguments: { meta, id, checkout } }
+          params: {
+            name: "update_checkout",
+            arguments: {
+              meta: {
+                "ucp-agent": {
+                  profile: UCP_AGENT_PROFILE
+                }
+              },
+              id,
+              checkout
+            }
+          }
         })
       });
-      const result = await response.json() as Record<string, unknown>;
+      const result = await response.json() as {
+        error?: unknown;
+        result?: {
+          content?: Array<{ type: "text"; text: string }>;
+          structuredContent?: Record<string, unknown>;
+          isError?: boolean;
+        };
+      };
       if ("error" in result) {
-        return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result, isError: true };
+        return {
+          content: [{ text: JSON.stringify(result.error), type: "text" as const }],
+          structuredContent: { error: result.error },
+          isError: true
+        };
       }
-      return { content: [{ text: JSON.stringify(result), type: "text" }], structuredContent: result };
+      return {
+        content: result.result?.content ?? [{ text: JSON.stringify(result.result?.structuredContent ?? {}), type: "text" as const }],
+        structuredContent: result.result?.structuredContent ?? {},
+        ...(result.result?.isError !== undefined ? { isError: result.result.isError } : {})
+      };
     }
   );
 
