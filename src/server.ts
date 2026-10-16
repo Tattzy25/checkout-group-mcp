@@ -105,25 +105,6 @@ const updateCheckoutInputSchema = z.object({
     )
 });
 
-function parseTextContent(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-function unwrapToolReply(reply: McpToolReply): unknown {
-  if (reply.error !== undefined) return { error: reply.error };
-  if (reply.result?.structuredContent !== undefined) return reply.result.structuredContent;
-
-  const text = reply.result?.content?.find(
-    (item) => item.type === "text" && typeof item.text === "string"
-  )?.text;
-
-  return text ? parseTextContent(text) : reply;
-}
-
 function compactCheckoutValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(compactCheckoutValue);
@@ -142,10 +123,6 @@ function compactCheckoutValue(value: unknown): unknown {
   return compacted;
 }
 
-function compactCheckoutResult(value: unknown): unknown {
-  return compactCheckoutValue(value);
-}
-
 function createToolResult(reply: McpToolReply) {
   if (reply.error !== undefined) {
     return {
@@ -155,10 +132,11 @@ function createToolResult(reply: McpToolReply) {
     };
   }
 
-  const compacted = compactCheckoutResult(unwrapToolReply(reply));
+  const compacted = compactCheckoutValue(reply.result?.structuredContent);
+  const text = JSON.stringify(compacted);
 
   return {
-    content: [{ text: JSON.stringify(compacted), type: "text" as const }],
+    content: text === undefined ? [] : [{ text, type: "text" as const }],
     structuredContent: compacted,
     ...(reply.result?.isError !== undefined ? { isError: reply.result.isError } : {})
   };
@@ -167,7 +145,7 @@ function createToolResult(reply: McpToolReply) {
 async function callShopifyCheckoutTool(
   shopDomain: string,
   name: "get_checkout" | "update_checkout",
-  args: Record<string, unknown>,
+  args: Record<string, unknown>
 ) {
   const response = await fetch(`https://${shopDomain}/api/ucp/mcp`, {
     method: "POST",
