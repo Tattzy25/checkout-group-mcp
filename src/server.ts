@@ -5,127 +5,20 @@ import { z } from "zod";
 const UCP_AGENT_PROFILE =
   "https://ucp-agent-profile.facetimefy.com/ucp/agent-profiles/2026-08-25/valid-with-capabilities.json";
 
-const createCheckoutInputSchema = z.object({
+type McpToolReply = {
+  error?: unknown;
+  result?: {
+    content?: Array<{ type?: string; text?: string }>;
+    structuredContent?: unknown;
+    isError?: boolean;
+  };
+};
+
+const getCheckoutInputSchema = z.object({
   shop_domain: z
     .string()
     .describe("The shop domain to call. This maps to https://{shop-domain}/api/ucp/mcp."),
-  cart_id: z
-    .string()
-    .describe(
-      "The optional ID of a cart built with Cart MCP to convert into this checkout."
-    )
-    .optional(),
-  checkout: z
-    .object({
-      currency: z
-        .string()
-        .describe("ISO 4217 currency code, for example USD, EUR, or GBP.")
-        .optional(),
-      line_items: z
-        .array(
-          z.object({
-            quantity: z
-              .number()
-              .int()
-              .min(1)
-              .describe("The quantity to purchase for this line item."),
-            item: z.object({
-              id: z
-                .string()
-                .describe("The product variant id for this line item.")
-            })
-          })
-        )
-        .describe(
-          "Array of items to purchase. Each item must include quantity and an item object with the product variant id."
-        )
-        .optional(),
-      buyer: z
-        .object({})
-        .passthrough()
-        .describe(
-          "Buyer information. Contact method email or phone_number must be provided, per-merchant configuration."
-        )
-        .optional(),
-      context: z
-        .object({
-          address_country: z.string().optional().describe("Provisional buyer signal for country."),
-          address_region: z.string().optional().describe("Provisional buyer signal for region."),
-          postal_code: z.string().optional().describe("Provisional buyer signal for postal code."),
-          intent: z.string().optional().describe("Provisional buyer intent signal."),
-          language: z.string().optional().describe("Provisional buyer language signal."),
-          currency: z.string().optional().describe("Provisional buyer currency signal."),
-          eligibility: z.array(z.string()).optional().describe("Eligibility signals.")
-        })
-        .describe(
-          "Provisional buyer signals for intent, localization, currency, and eligibility decisions. A shipping address supersedes these context hints."
-        )
-        .optional(),
-      attribution: z
-        .object({
-          referring_domain: z.string().optional(),
-          click_id_tag: z.string().optional(),
-          click_id_value: z.string().optional(),
-          activity_id_tag: z.string().optional(),
-          activity_id_value: z.string().optional(),
-          utm_campaign: z.string().optional(),
-          utm_source: z.string().optional(),
-          utm_medium: z.string().optional(),
-          utm_content: z.string().optional(),
-          utm_term: z.string().optional()
-        })
-        .describe(
-          "Optional attribution metadata. Supported fields include referring_domain, click_id_tag, click_id_value, activity_id_tag, activity_id_value, utm_campaign, utm_source, utm_medium, utm_content, and utm_term."
-        )
-        .optional(),
-      fulfillment: z
-        .object({})
-        .passthrough()
-        .describe("Fulfillment preferences including shipping methods and destinations.")
-        .optional(),
-      payment: z
-        .object({})
-        .passthrough()
-        .describe("Payment configuration including available instruments and selected_instrument_id.")
-        .optional()
-    })
-    .describe(
-      "The checkout object containing all checkout data. Optional when cart_id is provided, in which case the cart's contents are used instead."
-    )
-    .optional()
-}).superRefine((value, ctx) => {
-  if (value.cart_id) {
-    return;
-  }
-  if (!value.checkout) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "checkout is required when cart_id is not provided.",
-      path: ["checkout"]
-    });
-    return;
-  }
-  if (!value.checkout.currency) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "checkout.currency is required when cart_id is not provided.",
-      path: ["checkout", "currency"]
-    });
-  }
-  if (!value.checkout.line_items) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "checkout.line_items is required when cart_id is not provided.",
-      path: ["checkout", "line_items"]
-    });
-  }
-  if (!value.checkout.buyer) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "checkout.buyer is required when cart_id is not provided.",
-      path: ["checkout", "buyer"]
-    });
-  }
+  id: z.string().describe("The ID of the checkout session to retrieve.")
 });
 
 const updateCheckoutInputSchema = z.object({
@@ -212,6 +105,98 @@ const updateCheckoutInputSchema = z.object({
     )
 });
 
+function parseTextContent(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function unwrapToolReply(reply: McpToolReply): unknown {
+  if (reply.error !== undefined) return { error: reply.error };
+  if (reply.result?.structuredContent !== undefined) return reply.result.structuredContent;
+
+  const text = reply.result?.content?.find(
+    (item) => item.type === "text" && typeof item.text === "string"
+  )?.text;
+
+  return text ? parseTextContent(text) : reply;
+}
+
+function compactCheckoutValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(compactCheckoutValue);
+  }
+
+  if (!value || typeof value !== "object") return value;
+
+  const source = value as Record<string, unknown>;
+  const compacted: Record<string, unknown> = {};
+
+  for (const [key, entry] of Object.entries(source)) {
+    if (entry === undefined || entry === null) continue;
+    compacted[key] = compactCheckoutValue(entry);
+  }
+
+  return compacted;
+}
+
+function compactCheckoutResult(value: unknown): unknown {
+  return compactCheckoutValue(value);
+}
+
+function createToolResult(reply: McpToolReply) {
+  if (reply.error !== undefined) {
+    return {
+      content: [{ text: JSON.stringify(reply.error), type: "text" as const }],
+      structuredContent: { error: reply.error },
+      isError: true
+    };
+  }
+
+  const compacted = compactCheckoutResult(unwrapToolReply(reply));
+
+  return {
+    content: [{ text: JSON.stringify(compacted), type: "text" as const }],
+    structuredContent: compacted,
+    ...(reply.result?.isError !== undefined ? { isError: reply.result.isError } : {})
+  };
+}
+
+async function callShopifyCheckoutTool(
+  shopDomain: string,
+  name: "get_checkout" | "update_checkout",
+  args: Record<string, unknown>,
+) {
+  const response = await fetch(`https://${shopDomain}/api/ucp/mcp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream"
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: crypto.randomUUID(),
+      method: "tools/call",
+      params: {
+        name,
+        arguments: {
+          meta: {
+            "ucp-agent": {
+              profile: UCP_AGENT_PROFILE
+            }
+          },
+          ...args
+        }
+      }
+    })
+  });
+
+  const reply = await response.json() as McpToolReply;
+  return createToolResult(reply);
+}
+
 function createServer() {
   const server = new McpServer({
     name: "Checkout Group MCP",
@@ -219,53 +204,13 @@ function createServer() {
   });
 
   server.registerTool(
-    "create_checkout",
+    "get_checkout",
     {
-      description: "Create a new checkout session with line items, buyer information, and fulfillment preferences. Use this tool when a buyer is ready to purchase items and you need to initiate the checkout process. The response includes a `continue_url` for handing off to a trusted UI. When to use: Buyer says \"I want to buy this item\", or Agent has collected enough information to start checkout, and Buyer confirms their cart and wants to proceed.",
-      inputSchema: createCheckoutInputSchema
+      description: "Retrieve the current state of an existing checkout session. Use this tool to check the status of a checkout, see updated totals after changes, or verify what information is still needed before completion. When to use: Need to refresh checkout state after buyer returns, Want to show current totals and line items, or Checking if checkout is ready for payment.",
+      inputSchema: getCheckoutInputSchema
     },
-    async ({ shop_domain, cart_id, checkout }: z.infer<typeof createCheckoutInputSchema>) => {
-      const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          id: 1,
-          params: {
-            name: "create_checkout",
-            arguments: {
-              meta: {
-                "ucp-agent": {
-                  profile: UCP_AGENT_PROFILE
-                }
-              },
-              ...(cart_id ? { cart_id } : {}),
-              ...(checkout ? { checkout } : {})
-            }
-          }
-        })
-      });
-      const result = await response.json() as {
-        error?: unknown;
-        result?: {
-          content?: Array<{ type: "text"; text: string }>;
-          structuredContent?: Record<string, unknown>;
-          isError?: boolean;
-        };
-      };
-      if ("error" in result) {
-        return {
-          content: [{ text: JSON.stringify(result.error), type: "text" as const }],
-          structuredContent: { error: result.error },
-          isError: true
-        };
-      }
-      return {
-        content: result.result?.content ?? [{ text: JSON.stringify(result.result?.structuredContent ?? {}), type: "text" as const }],
-        structuredContent: result.result?.structuredContent ?? {},
-        ...(result.result?.isError !== undefined ? { isError: result.result.isError } : {})
-      };
+    async ({ shop_domain, id }: z.infer<typeof getCheckoutInputSchema>) => {
+      return callShopifyCheckoutTool(shop_domain, "get_checkout", { id });
     }
   );
 
@@ -276,47 +221,7 @@ function createServer() {
       inputSchema: updateCheckoutInputSchema
     },
     async ({ shop_domain, id, checkout }: z.infer<typeof updateCheckoutInputSchema>) => {
-      const response = await fetch(`https://${shop_domain}/api/ucp/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          id: 1,
-          params: {
-            name: "update_checkout",
-            arguments: {
-              meta: {
-                "ucp-agent": {
-                  profile: UCP_AGENT_PROFILE
-                }
-              },
-              id,
-              checkout
-            }
-          }
-        })
-      });
-      const result = await response.json() as {
-        error?: unknown;
-        result?: {
-          content?: Array<{ type: "text"; text: string }>;
-          structuredContent?: Record<string, unknown>;
-          isError?: boolean;
-        };
-      };
-      if ("error" in result) {
-        return {
-          content: [{ text: JSON.stringify(result.error), type: "text" as const }],
-          structuredContent: { error: result.error },
-          isError: true
-        };
-      }
-      return {
-        content: result.result?.content ?? [{ text: JSON.stringify(result.result?.structuredContent ?? {}), type: "text" as const }],
-        structuredContent: result.result?.structuredContent ?? {},
-        ...(result.result?.isError !== undefined ? { isError: result.result.isError } : {})
-      };
+      return callShopifyCheckoutTool(shop_domain, "update_checkout", { id, checkout });
     }
   );
 
